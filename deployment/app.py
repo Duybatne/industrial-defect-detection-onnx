@@ -8,28 +8,81 @@ import numpy as np
 from fastapi import FastAPI, File, UploadFile, HTTPException, Header, Depends, Query, status
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from contextlib import asynccontextmanager
 
-# Ensure project root is in sys.path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# Resolve base directory relative to this file
+BASE_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BASE_DIR))
 
 from src.pipeline.inference import ONNXInferencer
 
 API_KEY = os.getenv("API_KEY", "industrial-defect-secret-key-2026")
-MODEL_PATH = os.getenv("MODEL_PATH", "weights/model.onnx")
-THRESHOLD_CONFIG_PATH = os.getenv("THRESHOLD_CONFIG_PATH", "configs/threshold_config.json")
+MODEL_PATH = Path(
+    os.getenv(
+        "MODEL_PATH",
+        str(BASE_DIR / "weights" / "model.onnx"),
+    )
+)
+THRESHOLD_CONFIG_PATH = Path(
+    os.getenv(
+        "THRESHOLD_CONFIG_PATH",
+        str(BASE_DIR / "configs" / "threshold_config.json"),
+    )
+)
 
-from contextlib import asynccontextmanager
+# Global inferencer and error tracking
+inferencer: Optional[ONNXInferencer] = None
+model_load_error: Optional[Exception] = None
+
+
+def get_inferencer() -> Optional[ONNXInferencer]:
+    """Retrieves or initializes the global ONNX inferencer instance."""
+    global inferencer, model_load_error
+    if inferencer is None:
+        candidate_paths = [
+            MODEL_PATH,
+            BASE_DIR / "weights" / "model.onnx",
+            BASE_DIR / "weights" / "model_quantized.onnx",
+            BASE_DIR / "weights" / "model.onnx.enc",
+            BASE_DIR / "models" / "industrial_defect_model.onnx",
+        ]
+        model_to_load = None
+        for p in candidate_paths:
+            if Path(p).is_file():
+                model_to_load = str(p)
+                break
+
+        if model_to_load is not None:
+            try:
+                thresh_path = str(THRESHOLD_CONFIG_PATH) if THRESHOLD_CONFIG_PATH.is_file() else None
+                inferencer = ONNXInferencer(
+                    onnx_model_path=model_to_load,
+                    threshold_config_path=thresh_path
+                )
+                model_load_error = None
+            except Exception as e:
+                model_load_error = e
+                inferencer = None
+                print(f"[!] Unable to initialize ONNX inferencer: {e}")
+        else:
+            model_load_error = FileNotFoundError(f"Model not found at {MODEL_PATH} or fallback candidate paths.")
+            inferencer = None
+    return inferencer
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Preloads the ONNX model at service boot."""
     try:
-        get_inferencer()
-        print(f"[✓] Industrial Defect Detection API started. Model loaded: {MODEL_PATH}")
+        engine = get_inferencer()
+        if engine:
+            print(f"[✓] Industrial Defect Detection API started. Model loaded: {engine.model_path}")
+        else:
+            print(f"[!] Service started without loaded model: {model_load_error}")
     except Exception as e:
         print(f"[!] Warning on startup: {e}")
     yield
+
 
 app = FastAPI(
     title="Industrial Defect Detection API",
@@ -46,38 +99,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global inferencer instance
-inferencer: Optional[ONNXInferencer] = None
-
-
-def get_inferencer() -> ONNXInferencer:
-    global inferencer
-    if inferencer is None:
-        # Check fallback options: encrypted model -> quantized model -> base model
-        model_to_load = MODEL_PATH
-        if not os.path.exists(model_to_load):
-            enc_path = "weights/model.onnx.enc"
-            quant_path = "weights/model_quantized.onnx"
-            base_path = "weights/model.onnx"
-            if os.path.exists(quant_path):
-                model_to_load = quant_path
-            elif os.path.exists(base_path):
-                model_to_load = base_path
-            elif os.path.exists(enc_path):
-                model_to_load = enc_path
-
-        if os.path.exists(model_to_load):
-            inferencer = ONNXInferencer(
-                onnx_model_path=model_to_load,
-                threshold_config_path=THRESHOLD_CONFIG_PATH
-            )
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"Inference model not found at {MODEL_PATH} or fallback paths."
-            )
-    return inferencer
-
 
 def verify_api_key(x_api_key: Optional[str] = Header(None, alias="X-API-Key")):
     """Verifies X-API-Key request header."""
@@ -91,25 +112,51 @@ def verify_api_key(x_api_key: Optional[str] = Header(None, alias="X-API-Key")):
     return True
 
 
+def validate_image(upload_file: UploadFile, contents: bytes) -> np.ndarray:
+    """
+    Validates uploaded file MIME type and decodes image bytes.
+    Raises HTTP 400 Bad Request if file is invalid or corrupted.
+    """
+    allowed_types = {"image/png", "image/jpeg", "image/jpg", "image/bmp"}
+    is_valid_type = (
+        (upload_file.content_type and upload_file.content_type.lower() in allowed_types) or
+        (upload_file.filename and upload_file.filename.lower().endswith((".png", ".jpg", ".jpeg", ".bmp")))
+    )
 
+    if not is_valid_type:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid file type '{upload_file.content_type}'. Please upload an image file."
+        )
+
+    if len(contents) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Could not decode image: uploaded file is empty."
+        )
+
+    image = cv2.imdecode(np.frombuffer(contents, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Could not decode image: file may be corrupted."
+        )
+
+    return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
 
 @app.get("/health", tags=["Monitoring"])
 def health_check():
     """Service health probe endpoint."""
-    global inferencer
-    if inferencer is None:
-        try:
-            get_inferencer()
-        except Exception:
-            pass
-    loaded = inferencer is not None
+    engine = get_inferencer()
+    loaded = engine is not None
     return {
         "status": "healthy" if loaded else "degraded",
         "model_loaded": loaded,
-        "model_path": getattr(inferencer, "model_path", None) if loaded else None,
-        "threshold": getattr(inferencer, "threshold", 0.05) if loaded else None,
-        "version": "1.0.0"
+        "model_path": getattr(engine, "model_path", None) if loaded else None,
+        "threshold": getattr(engine, "threshold", 0.05) if loaded else None,
+        "version": "1.0.0",
+        "error": str(model_load_error) if not loaded else None
     }
 
 
@@ -124,29 +171,18 @@ async def predict_single_image(
     - Normal (Pass) vs Defect (Reject)
     - Returns confidence score and uncertainty flag for human-in-the-loop review.
     """
-    if not (file.content_type and file.content_type.startswith("image/")) and not (file.filename and file.filename.lower().endswith((".png", ".jpg", ".jpeg", ".bmp"))):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid file type '{file.content_type}'. Please upload an image file."
-        )
-
     contents = await file.read()
-    if len(contents) == 0:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Uploaded file is empty."
-        )
 
-    nparr = np.frombuffer(contents, np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    if img is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Could not decode image file. File may be corrupted."
-        )
+    # Validate the request before checking model availability.
+    img_rgb = validate_image(file, contents)
 
-    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     engine = get_inferencer()
+    if engine is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Model unavailable: {model_load_error}"
+        )
+
     result = engine.predict(img_rgb, threshold=threshold)
 
     return JSONResponse(content={
@@ -180,17 +216,17 @@ async def predict_batch_images(
     filenames = []
     for file in files:
         contents = await file.read()
-        nparr = np.frombuffer(contents, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        if img is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Could not decode image file: {file.filename}"
-            )
-        decoded_images.append(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        # Validate the request before checking model availability.
+        img_rgb = validate_image(file, contents)
+        decoded_images.append(img_rgb)
         filenames.append(file.filename)
 
     engine = get_inferencer()
+    if engine is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Model unavailable: {model_load_error}"
+        )
 
     t0 = time.perf_counter()
     batch_results = engine.predict_batch(decoded_images, threshold=threshold)

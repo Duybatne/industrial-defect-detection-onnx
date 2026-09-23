@@ -26,11 +26,14 @@ jobs:
         run: |
           python deployment/export_onnx.py --output weights/model.onnx
           python src/pipeline/security.py --encrypt weights/model.onnx --output weights/model.onnx.enc
+          mkdir -p models
+          cp weights/model.onnx models/industrial_defect_model.onnx
 
       - name: Run test suite
         env:
           PYTHONPATH: .
           API_KEY: industrial-defect-secret-key-2026
+          MODEL_PATH: weights/model.onnx
         run: |
           pytest tests/ -v
 

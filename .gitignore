@@ -19,6 +19,8 @@ data/
 *.enc
 weights/*
 !weights/.gitkeep
+models/*
+!models/.gitkeep
 
 # Logs and checkpoints
 runs/
