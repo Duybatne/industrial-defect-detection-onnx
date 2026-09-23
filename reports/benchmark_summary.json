@@ -1,0 +1,43 @@
+{
+  "benchmark_results": [
+    {
+      "framework": "PyTorch FP32",
+      "file_size_mb": 46.34,
+      "mean_latency_ms": 96.23,
+      "std_latency_ms": 34.96,
+      "p50_latency_ms": 92.57,
+      "p90_latency_ms": 129.74,
+      "p95_latency_ms": 145.04,
+      "p99_latency_ms": 225.8,
+      "fps": 10.4,
+      "ram_mb": 105.26,
+      "speedup": 1.0
+    },
+    {
+      "framework": "ONNX FP32",
+      "file_size_mb": 15.28,
+      "mean_latency_ms": 57.03,
+      "std_latency_ms": 41.82,
+      "p50_latency_ms": 39.4,
+      "p90_latency_ms": 112.8,
+      "p95_latency_ms": 141.42,
+      "p99_latency_ms": 215.64,
+      "fps": 17.5,
+      "ram_mb": 22.18,
+      "speedup": 2.35
+    },
+    {
+      "framework": "ONNX INT8",
+      "file_size_mb": 15.29,
+      "mean_latency_ms": 42.03,
+      "std_latency_ms": 21.02,
+      "p50_latency_ms": 34.45,
+      "p90_latency_ms": 62.17,
+      "p95_latency_ms": 86.79,
+      "p99_latency_ms": 127.25,
+      "fps": 23.8,
+      "ram_mb": 4.23,
+      "speedup": 2.69
+    }
+  ]
+}
