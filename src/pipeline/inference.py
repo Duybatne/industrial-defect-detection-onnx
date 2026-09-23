@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import time
 from pathlib import Path
 from typing import Tuple, Union, List, Dict, Any, Optional
 import numpy as np
@@ -15,29 +16,29 @@ class ONNXInferencer:
     """
     Industrial ONNX Runtime Inference Engine:
     - Preprocessing with standard ImageNet scaling & normalization
+    - AES-256 in-memory decrypted model loading support
     - Threshold calibration integration (T* from threshold_config.json)
     - Dynamic batch inference support
     - Optional IOBinding for high-throughput zero-copy memory transfers
+    - Human-in-the-loop uncertainty margin monitoring (0.40 <= P <= 0.65)
     - Standardized production JSON response schema
     """
     def __init__(
         self,
-        onnx_model_path: str = "weights/model.onnx",
+        onnx_model_path: Optional[Union[str, Path]] = "weights/model.onnx",
+        model_bytes: Optional[bytes] = None,
+        secret_key: Optional[str] = None,
         threshold_config_path: Optional[str] = "configs/threshold_config.json",
         img_size: Tuple[int, int] = (224, 224),
         class_names: Tuple[str, ...] = ("Normal", "Defect"),
         num_threads: int = 4,
         use_io_binding: bool = False
     ):
-        if not os.path.exists(onnx_model_path):
-            raise FileNotFoundError(f"ONNX model not found at: {onnx_model_path}")
-
-        self.model_path = onnx_model_path
         self.img_size = img_size
         self.class_names = class_names
         self.use_io_binding = use_io_binding
 
-        # Configure ONNX Runtime session
+        # Configure ONNX Runtime session options
         self.opts = ort.SessionOptions()
         self.opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         if num_threads > 0:
@@ -47,7 +48,27 @@ class ONNXInferencer:
         available_providers = ort.get_available_providers()
         selected_providers = [p for p in providers if p in available_providers]
 
-        self.session = ort.InferenceSession(self.model_path, self.opts, providers=selected_providers)
+        # Initialize session from RAM bytes, encrypted file, or standard file
+        if model_bytes is not None:
+            self.session = ort.InferenceSession(model_bytes, self.opts, providers=selected_providers)
+            self.model_path = "<RAM-Bytes>"
+        elif onnx_model_path is not None:
+            path_str = str(onnx_model_path)
+            if not os.path.exists(path_str):
+                raise FileNotFoundError(f"ONNX model file not found at: {path_str}")
+
+            if path_str.endswith(".enc"):
+                from src.pipeline.security import load_encrypted_model_to_ram
+                key = secret_key or os.getenv("MODEL_SECRET_KEY", "industrial-secret-key-32bytes-12345")
+                decrypted_bytes = load_encrypted_model_to_ram(path_str, key)
+                self.session = ort.InferenceSession(decrypted_bytes, self.opts, providers=selected_providers)
+                self.model_path = f"<RAM-Decrypted:{path_str}>"
+            else:
+                self.session = ort.InferenceSession(path_str, self.opts, providers=selected_providers)
+                self.model_path = path_str
+        else:
+            raise ValueError("Either onnx_model_path or model_bytes must be provided.")
+
         self.input_name = self.session.get_inputs()[0].name
         self.output_name = self.session.get_outputs()[0].name
 
@@ -120,9 +141,10 @@ class ONNXInferencer:
             threshold: Optional custom decision threshold overriding default.
 
         Returns:
-            Dictionary with prediction results.
+            Dictionary with prediction results and latency.
         """
         thresh = self.threshold if threshold is None else threshold
+        t0 = time.perf_counter()
         tensor = self.preprocess(image)
 
         if self.use_io_binding:
@@ -135,9 +157,13 @@ class ONNXInferencer:
         else:
             logits = self.session.run([self.output_name], {self.input_name: tensor})[0]
 
+        t1 = time.perf_counter()
+        inference_time_ms = round((t1 - t0) * 1000.0, 2)
+
         probs = self._softmax(logits)[0]
         defect_score = float(probs[1])
         is_defect = bool(defect_score >= thresh)
+        uncertainty_flag = bool(0.40 <= defect_score <= 0.65)
         pred_idx = 1 if is_defect else 0
         label = self.class_names[pred_idx]
 
@@ -148,6 +174,8 @@ class ONNXInferencer:
             "confidence": float(probs[pred_idx]),
             "defect_score": defect_score,
             "threshold": thresh,
+            "inference_time_ms": inference_time_ms,
+            "uncertainty_flag": uncertainty_flag,
             "probabilities": {
                 self.class_names[0]: float(probs[0]),
                 self.class_names[1]: float(probs[1])
@@ -173,9 +201,14 @@ class ONNXInferencer:
             return []
 
         thresh = self.threshold if threshold is None else threshold
+        t0 = time.perf_counter()
         batch_tensor = self.preprocess_batch(images)
 
         logits = self.session.run([self.output_name], {self.input_name: batch_tensor})[0]
+        t1 = time.perf_counter()
+        total_time_ms = (t1 - t0) * 1000.0
+        per_item_time_ms = round(total_time_ms / len(images), 2)
+
         probs = self._softmax(logits)
 
         results = []
@@ -183,6 +216,7 @@ class ONNXInferencer:
             p = probs[i]
             defect_score = float(p[1])
             is_defect = bool(defect_score >= thresh)
+            uncertainty_flag = bool(0.40 <= defect_score <= 0.65)
             pred_idx = 1 if is_defect else 0
             label = self.class_names[pred_idx]
 
@@ -193,6 +227,8 @@ class ONNXInferencer:
                 "confidence": float(p[pred_idx]),
                 "defect_score": defect_score,
                 "threshold": thresh,
+                "inference_time_ms": per_item_time_ms,
+                "uncertainty_flag": uncertainty_flag,
                 "probabilities": {
                     self.class_names[0]: float(p[0]),
                     self.class_names[1]: float(p[1])

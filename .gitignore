@@ -16,6 +16,7 @@ data/
 *.engine
 *.bin
 *.safetensors
+*.enc
 weights/*
 !weights/.gitkeep
 
