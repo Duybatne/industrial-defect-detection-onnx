@@ -97,6 +97,12 @@ def verify_api_key(x_api_key: Optional[str] = Header(None, alias="X-API-Key")):
 @app.get("/health", tags=["Monitoring"])
 def health_check():
     """Service health probe endpoint."""
+    global inferencer
+    if inferencer is None:
+        try:
+            get_inferencer()
+        except Exception:
+            pass
     loaded = inferencer is not None
     return {
         "status": "healthy" if loaded else "degraded",
