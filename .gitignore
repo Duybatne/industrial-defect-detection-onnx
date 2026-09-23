@@ -32,3 +32,10 @@ wandb/
 
 # Prompts & system instructions
 *PROMPT*.md
+
+# Secrets and environment variables
+.env
+.env.*
+*.key
+*.pem
+*.secret
