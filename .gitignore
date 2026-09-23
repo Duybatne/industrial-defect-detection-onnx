@@ -30,8 +30,9 @@ wandb/
 .vscode/
 .idea/
 
-# Prompts & system instructions
+# Prompts & internal planning documents
 *PROMPT*.md
+PLAN.md
 
 # Secrets and environment variables
 .env
