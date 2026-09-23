@@ -31,6 +31,9 @@
 ### CI/CD Workflows & Unit Tests: [Đạt]
 - Bộ kiểm thử tự động gồm 32 unit tests đạt tỷ lệ đạt 100% (`32 passed in 1.15s`).
 - Workflow `.github/workflows/ci.yml` kiểm thử tự động trên GitHub Actions cho toàn bộ pipeline từ Dataset, Training, ONNX export, INT8 quantization, Security, đến API và Docker build.
+- **Trạng thái GitHub Actions CI mới nhất (Commit `9fe382b`):**
+  - Run ID: `35892755431`
+  - Kết quả: **`success`** (Tất cả các bước: Checkout, Setup Python, Install Dependencies, Generate ONNX model, Run test suite, Verify Docker build đều **SUCCESS 100%**).
 
 ### Tài liệu hóa (README.md & API docs): [Đạt]
 - File `README.md` cung cấp đầy đủ bảng đo kiểm Benchmark (PyTorch vs ONNX FP32 vs ONNX INT8), hướng dẫn mã hóa mô hình AES-256, các lệnh cURL thực tế có header xác thực, hướng dẫn chạy Streamlit và Docker container.
