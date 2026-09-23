@@ -124,9 +124,7 @@ async def predict_single_image(
     - Normal (Pass) vs Defect (Reject)
     - Returns confidence score and uncertainty flag for human-in-the-loop review.
     """
-    engine = get_inferencer()
-
-    if not file.content_type.startswith("image/") and not file.filename.lower().endswith((".png", ".jpg", ".jpeg", ".bmp")):
+    if not (file.content_type and file.content_type.startswith("image/")) and not (file.filename and file.filename.lower().endswith((".png", ".jpg", ".jpeg", ".bmp"))):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid file type '{file.content_type}'. Please upload an image file."
@@ -148,6 +146,7 @@ async def predict_single_image(
         )
 
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    engine = get_inferencer()
     result = engine.predict(img_rgb, threshold=threshold)
 
     return JSONResponse(content={
@@ -171,7 +170,6 @@ async def predict_batch_images(
     """
     Executes high-throughput batch classification on multiple images.
     """
-    engine = get_inferencer()
     if not files:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -191,6 +189,8 @@ async def predict_batch_images(
             )
         decoded_images.append(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         filenames.append(file.filename)
+
+    engine = get_inferencer()
 
     t0 = time.perf_counter()
     batch_results = engine.predict_batch(decoded_images, threshold=threshold)

@@ -22,6 +22,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Generate ONNX model for CI testing
+        run: |
+          python deployment/export_onnx.py --output weights/model.onnx
+          python src/pipeline/security.py --encrypt weights/model.onnx --output weights/model.onnx.enc
+
       - name: Run test suite
         env:
           PYTHONPATH: .

@@ -8,6 +8,16 @@ from fastapi.testclient import TestClient
 from deployment.app import app, API_KEY
 
 
+@pytest.fixture(scope="session", autouse=True)
+def ensure_onnx_model():
+    """Ensures at least one ONNX model exists before running API tests in any environment."""
+    os.makedirs("weights", exist_ok=True)
+    target = "weights/model.onnx"
+    if not (os.path.exists(target) or os.path.exists("weights/model_quantized.onnx") or os.path.exists("weights/model.onnx.enc")):
+        from deployment.export_onnx import export_to_onnx
+        export_to_onnx(output_path=target)
+
+
 @pytest.fixture(scope="module")
 def client():
     with TestClient(app) as test_client:
